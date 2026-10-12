@@ -12,9 +12,12 @@ Every rule maps to an artifact class measured on the live corpus (Sept 2026):
   (undone at its origin in section_formatter too; the retry suffix in
   agents.base.call_llm_json is what invites the over-escaping)
 - display math whose closing $$ is followed by prose           54 papers
+- display math in a list item closed at column 0, one-line $$...$$ and
+  $$ glued to a multi-line equation's first line (all rendered wrong)
 - currency "$391M" parsed as inline-math delimiters
 - bare TeX commands in prose rendered as literal backslashes   207 papers
 - \\[ \\] / \\( \\) delimiters remark-math does not understand
+- bare TeX in video concept labels (label_to_text)
 """
 
 from __future__ import annotations
@@ -52,6 +55,15 @@ _SCAFFOLD_LEAD_RE = re.compile(
 )
 _SCAFFOLD_TAIL_RE = re.compile(r"\s*</summary>\s*$", re.IGNORECASE)
 _UNICODE_ESC_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+# Literal \n residue in text that also has real newlines: a run of two or more
+# (a paragraph break) before a capital, digit, markdown marker, math or the
+# end, or any run right before a markdown list item / heading / quote. TeX
+# commands that start with n (\nabla, \neq, \nu) are followed by a lowercase
+# letter, and a lone \n before a space ("Use \n to split") is prose about it.
+_RESIDUE_NL_RE = re.compile(
+    r"(?<!\\)(?:(?:\\n){2,}(?=[A-Z0-9*#>$\\(\[-]|\Z)|(?:\\n)+(?=[-*+>] |#{1,6} |\d+[.)] ))"
+)
+_CODE_RE = re.compile(r"```[\s\S]*?```|`[^`\n]+`")
 
 
 def strip_prompt_scaffold(text: str) -> str:
@@ -69,14 +81,32 @@ def unescape_json_artifacts(text: str) -> str:
     a command, literal two-character ``\\n``) runs only when the text is
     detectably double-encoded — no real newlines, or ``\\uXXXX`` present —
     so a prose sentence mentioning ``\\n`` and a ``\\\\`` row break inside
-    display math survive.
+    display math survive. Text that does have real newlines can still carry
+    literal ``\\n`` residue; only the narrow shapes in ``_RESIDUE_NL_RE``
+    (a paragraph break, a break before a list item or heading) are undone,
+    and never inside code.
     """
     t = _UNICODE_ESC_RE.sub(lambda m: chr(int(m.group(1), 16)), text)
     double_encoded = ("\n" not in text and "\\n" in text) or _UNICODE_ESC_RE.search(text) is not None
     if double_encoded:
         t = re.sub(r"\\\\(?=[A-Za-z])", r"\\", t)
         t = re.sub(r"\\n(?=[\s$])", "\n", t)
-    return t
+    return _undo_residue_newlines(t)
+
+
+def _undo_residue_newlines(text: str) -> str:
+    """Undo the ``_RESIDUE_NL_RE`` shapes outside code spans and fences."""
+    code = [m.span() for m in _CODE_RE.finditer(text)]
+
+    def sub(m: re.Match) -> str:
+        if any(start <= m.start() < end for start, end in code):
+            return m.group(0)
+        return "\n" * m.group(0).count("\\n")
+
+    t = _RESIDUE_NL_RE.sub(sub, text)
+    # clean_artifacts collapsed blank-line runs before this ran; a residue
+    # break next to a real one must not leave a run a second pass collapses.
+    return re.sub(r"\n{3,}", "\n\n", t) if t != text else t
 
 
 # ---------------------------------------------------------------------------
@@ -85,43 +115,85 @@ def unescape_json_artifacts(text: str) -> str:
 _TAG_RE = re.compile(r"\\tag\{[^}]*\}")
 
 
+def _one_line_display(s: str) -> str | None:
+    """The TeX of a stripped line that is exactly one $$...$$ pair, else None."""
+    if s.startswith("$$") and s.endswith("$$") and s.count("$$") == 2:
+        return s[2:-2].strip() or None
+    return None
+
+
+def _closed_later(lines: list[str], k: int) -> bool:
+    """The next line after ``lines[k]`` that holds a ``$$`` ends with its only one."""
+    for line in lines[k + 1 :]:
+        if "$$" in line:
+            s = line.strip()
+            return s.endswith("$$") and s.count("$$") == 1
+    return False
+
+
 def normalize_math_fences(text: str) -> str:
     """Make display math well-formed for remark-math.
 
-    A ``$$`` opened on its own line must close on its own line: a content
-    line that closes with ``$$`` and continues with prose is split, a
-    trailing ``$$`` moves to its own line, a ``\\$`` closer becomes ``$$``,
-    ``\\tag{}`` (unsupported by KaTeX) is dropped, and an odd number of
-    fences is closed at the end instead of swallowing the section.
+    A ``$$`` opened on its own line must close on its own line, at the
+    opener's indentation: a list item's block closed at column 0 ends the
+    list item, and every later ``$$`` pairs with the wrong partner. A
+    content line that closes with ``$$`` and continues with prose is split
+    (the prose keeps the indentation too), a trailing ``$$`` moves to its
+    own line, a ``\\$`` closer becomes ``$$``, ``\\tag{}`` (unsupported by
+    KaTeX) is dropped, and an odd number of fences is closed at the end
+    instead of swallowing the section.
+
+    remark-math renders a one-line ``$$...$$`` as inline math, so a line
+    that is exactly one such pair is split onto fence lines; a ``$$y$$`` in
+    the middle of prose stays inline. An opener glued to the first line of
+    a multi-line equation (``$$x = 1,`` ... ``y = 2.$$``) gets its own
+    line too, or remark-math reads the first line as the fence's meta and
+    never finds the closer. A ``$$`` inside a code fence opens no block
+    and is not split.
     """
     out: list[str] = []
     open_block = False
-    for line in text.split("\n"):
+    in_code = False
+    indent = ""
+    lines = text.split("\n")
+    for k, line in enumerate(lines):
         s = line.strip()
         if not open_block:
-            if s == "$$":
+            if s.startswith("```"):
+                in_code = not in_code
+            indent = line[: len(line) - len(line.lstrip())]
+            tex = None if in_code else _one_line_display(s)
+            if tex is not None:
+                out.extend([f"{indent}$$", indent + tex, f"{indent}$$"])
+                continue
+            if not in_code and len(s) > 2 and s.startswith("$$") and s.count("$$") == 1:
+                if _closed_later(lines, k):
+                    out.extend([f"{indent}$$", indent + s[2:].strip()])
+                    open_block = True
+                    continue
+            if s == "$$" and not in_code:
                 open_block = True
             out.append(line)
             continue
         if s in ("$$", "\\$"):
-            out.append("$$")
+            out.append(f"{indent}$$")
             open_block = False
             continue
         m = re.match(r"^(.*?)\$\$[ \t]*(\S.*)$", line)
         if m and "$$" not in m.group(1):
             # "... = f(x).$$ Intuition: ..." -> equation, closer, blank, prose
-            out.extend([m.group(1).rstrip(), "$$", "", m.group(2)])
+            out.extend([m.group(1).rstrip(), f"{indent}$$", "", indent + m.group(2)])
             open_block = False
             continue
         if s.endswith("$$") and s.count("$$") == 1:
-            out.extend([line[: line.rfind("$$")].rstrip(), "$$"])
+            out.extend([line[: line.rfind("$$")].rstrip(), f"{indent}$$"])
             open_block = False
             continue
         out.append(line)
     t = "\n".join(out)
     t = _TAG_RE.sub("", t)
     if t.count("$$") % 2 == 1:
-        t = t.rstrip() + "\n$$"
+        t = t.rstrip() + "\n" + (indent if open_block else "") + "$$"
     return t
 
 
@@ -131,36 +203,42 @@ def normalize_math_fences(text: str) -> str:
 _MATHISH_RE = re.compile(r"[\\^_=<>+*/]")
 
 
-def _is_currency(line: str, i: int) -> bool:
-    """``line[i]`` is a ``$`` followed by a digit. Money, or an inline-math opener?
+def _opens_math(line: str, i: int) -> bool:
+    """``line[i]`` is a ``$`` followed by a digit. Does an inline formula follow?
 
     Money when: no closing ``$`` on the line; the closing ``$`` is itself
     followed by a digit (``$5 and $10``, ``$5 < $10``); or the span between
-    reads as prose (spaces / ``;``) rather than a formula. A short numeric
-    span with a real closer (``$5$``) and anything containing TeX or
+    reads as prose (spaces / ``;``) rather than a formula. A span that is
+    one token (``$5$``, ``$6n$``, ``$2n-1$``) and anything containing TeX or
     operators (``$2^n$``, ``$10\\%$``) is math.
     """
-    if i > 0 and line[i - 1] not in " \t([~-":
-        return False  # closing a span, or glued to a word
     j = i + 1
     while True:
         j = line.find("$", j)
         if j == -1:
-            return True
+            return False
         if line[j - 1] != "\\":
             break
         j += 1
     after = line[j + 1] if j + 1 < len(line) else ""
     if after.isdigit():
-        return True
-    cand = line[i + 1 : j]
-    if re.fullmatch(r"[\d.,]+", cand):
         return False
-    return not _MATHISH_RE.search(cand)
+    cand = line[i + 1 : j]
+    return not re.search(r"[\s;]", cand) or _MATHISH_RE.search(cand) is not None
+
+
+def _at_token_start(line: str, i: int) -> bool:
+    """``line[i]`` starts a token (a ``$`` closing a span or glued to a word does not)."""
+    return i == 0 or line[i - 1] in " \t([~-"
 
 
 def escape_currency(text: str) -> str:
-    """``$391M; Harris $191M`` is money, not a formula — escape the ``$``."""
+    """``$391M; Harris $191M`` is money, not a formula — escape the ``$``.
+
+    Decided per ``$`` followed by a digit at the start of a token. A ``\\$``
+    that an older rule stored in front of a formula (``\\$6n$``) is undone,
+    so stored papers are repaired at read time.
+    """
     out: list[str] = []
     in_block = False
     in_code = False
@@ -176,8 +254,13 @@ def escape_currency(text: str) -> str:
         chars = list(line)
         i = 0
         while i < len(chars):
-            if chars[i] == "$" and i + 1 < len(chars) and chars[i + 1].isdigit() and (i == 0 or chars[i - 1] != "\\"):
-                if _is_currency("".join(chars), i):
+            if chars[i] == "$" and i + 1 < len(chars) and chars[i + 1].isdigit():
+                cur = "".join(chars)
+                if i > 0 and chars[i - 1] == "\\":
+                    if _at_token_start(cur, i - 1) and _opens_math(cur, i):
+                        del chars[i - 1]
+                        i -= 1
+                elif _at_token_start(cur, i) and not _opens_math(cur, i):
                     chars.insert(i, "\\")
                     i += 1
             i += 1
@@ -252,7 +335,9 @@ def normalize_display_text(text: str | None, *, from_organizer: bool = True) -> 
     """The full pipeline, idempotent — safe to apply at ingest and at read.
 
     ``from_organizer=False`` (arXiv abstracts) skips the scaffold strip and the
-    JSON-residue undo, which only make sense for organizer output.
+    JSON-residue undo, which only make sense for organizer output. The text
+    is stripped before the fence pass so a first-line opener's indentation
+    is the same on every pass.
     """
     if not text:
         return ""
@@ -260,7 +345,7 @@ def normalize_display_text(text: str | None, *, from_organizer: bool = True) -> 
     if from_organizer:
         t = strip_prompt_scaffold(t)
         t = unescape_json_artifacts(t)
-    t = normalize_math_fences(t)
+    t = normalize_math_fences(t.strip())
     t = escape_currency(t)
     t = wrap_bare_tex(t)
     return t.strip()
@@ -299,11 +384,16 @@ def tex_to_text(title: str | None) -> str:
 
     def plain_math(m: re.Match) -> str:
         inner = m.group(1)
+        # Known symbols first: once braces and sub/superscript markers go, a
+        # command runs into the letters after it (\phi_i -> \phii -> "phii").
+        inner = re.sub(r"\\([A-Za-z]+)", lambda s: _SYMBOLS.get(s.group(1), s.group(0)), inner)
         inner = re.sub(r"\\(?:mathbb|mathcal|mathrm|mathbf|mathit|text|operatorname)\s*\{?([A-Za-z0-9]+)\}?", r"\1", inner)
         inner = re.sub(r"\\sqrt\{([^{}]*)\}", "\u221a\\1", inner)
-        inner = re.sub(r"_\{([^{}]*)\}|_(\w)", lambda s: (s.group(1) or s.group(2)).translate(_SUB), inner)
-        inner = re.sub(r"\^\{([^{}]*)\}|\^(\w)", lambda s: (s.group(1) or s.group(2)).translate(_SUP), inner)
-        inner = re.sub(r"[_^](?=\\)", "", inner)  # \ell_\infty -> ℓ∞ (symbol carries the meaning)
+        inner = re.sub(r"_\{([^{}]*)\}|_([\w+\-])", lambda s: (s.group(1) or s.group(2)).translate(_SUB), inner)
+        inner = re.sub(r"\^\{([^{}]*)\}|\^([\w*+\-])", lambda s: (s.group(1) or s.group(2)).translate(_SUP), inner)
+        # \ell_\infty -> ℓ∞: before a symbol or command the marker is dropped
+        # (the symbol carries the meaning).
+        inner = re.sub(r"[_^](?=\\|[^\w\s\x00-\x7f])", "", inner)
         inner = re.sub(r"\\([A-Za-z]+)", lambda s: _SYMBOLS.get(s.group(1), s.group(1)), inner)
         inner = inner.replace("{", "").replace("}", "")
         # Collapse spaces only around operators/relations, keep word spacing.
@@ -312,3 +402,66 @@ def tex_to_text(title: str | None) -> str:
 
     t = re.sub(r"\$([^$]+)\$", plain_math, t)
     return re.sub(r"\s+", " ", t).strip()
+
+
+# ---------------------------------------------------------------------------
+# 7. Plain-text video labels
+# ---------------------------------------------------------------------------
+# A word carries TeX when it has a command, a braced or command sub/superscript,
+# or a bare one that Unicode can render (x_1, n^2, S^*, \pi^+). Bare letter
+# subscripts (JRC_m, G_goal, file_name.py) are left as written.
+_LABEL_TEX_RE = re.compile(r"\\[A-Za-z]|[_^][{\\]|[A-Za-z0-9)}\]][_^][\d*+\-]")
+_FONT_SWITCH_RE = re.compile(
+    r"\\(?:rm|bf|it|sf|tt|cal|mathrm|mathbf|mathit|mathsf|mathcal|mathbb)\b(?!\{)\s*"
+)
+
+
+def _wrap_tex_words(text: str) -> str:
+    """Wrap each TeX-bearing word in ``$...$``. Words split on whitespace
+    outside braces, so ``{\\rm Bad Net}`` is one word."""
+    out: list[str] = []
+    word: list[str] = []
+    depth = 0
+
+    def flush() -> None:
+        w = "".join(word)
+        word.clear()
+        if _LABEL_TEX_RE.search(w):
+            w = _FONT_SWITCH_RE.sub("", w)
+            w = f"${w}$" if w else ""
+        out.append(w)
+
+    for ch in text:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        if ch.isspace() and depth == 0:
+            flush()
+            out.append(ch)
+        else:
+            word.append(ch)
+    flush()
+    return "".join(out)
+
+
+def label_to_text(label: str | None) -> str:
+    """Plain-text video label (``Visualization.concept``), like a title.
+
+    Concepts are LLM-written and often carry bare TeX with no ``$``
+    delimiters (``S_{(j)}^*``, ``\\Phi(\\bx)=g_{\\theta}(...)``), which
+    ``tex_to_text`` alone leaves untouched, plus JSON-escape residue
+    (``\\u2194``, ``\\\\mathcal``, ``Levin\\'s``). The residue is undone,
+    TeX-bearing words are wrapped in ``$...$`` (``$...$`` spans already
+    there are kept; text holding an unpaired ``$`` is not wrapped, since a
+    new pair would close against it) and the result goes through
+    ``tex_to_text``.
+    """
+    if not label:
+        return ""
+    t = _UNICODE_ESC_RE.sub(lambda m: chr(int(m.group(1), 16)), label)
+    t = re.sub(r"\\\\(?=[A-Za-z])", r"\\", t)
+    t = re.sub(r"\\(['{}])", r"\1", t)
+    parts = re.split(r"(\$[^$]+\$)", t)
+    wrapped = (p if i % 2 or "$" in p else _wrap_tex_words(p) for i, p in enumerate(parts))
+    return tex_to_text("".join(wrapped))
