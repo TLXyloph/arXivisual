@@ -157,7 +157,10 @@ class TestCurrency:
     def test_stored_escape_before_a_formula_is_undone(self):
         # 1301.0081 was stored as \$6n$ by the older rule.
         assert escape_currency("dimension \\$6n$ here") == "dimension $6n$ here"
-        assert escape_currency("paid \\$5 for $x$ units") == "paid \\$5 for $x$ units"
+        assert escape_currency("the \\$2n-1$ terms") == "the $2n-1$ terms"
+        # Only the shape the older rule escaped is undone; an escape it never wrote stays.
+        for text in ("paid \\$5 for $x$ units", "pay \\$5/unit and $x$ later", "a \\$5$ b"):
+            assert escape_currency(text) == text
 
 
 class TestIdempotencyAndFalsePositives:
@@ -172,6 +175,7 @@ class TestIdempotencyAndFalsePositives:
         "  $$\n  x = 1\n  $$\nthen\n\n- b:\n  $$K \\le c$$",
         "1. Split:\n   $$U = F(X),\\qquad\n   V = G(X),$$ so\n   next",
         "Intro.\\n\\nKey:\\n- a\n\\n\\nB `c\\n\\nD`",
+        "rate \\$10\\%$ x",
     ]
 
     @pytest.mark.parametrize("from_organizer", [True, False])
@@ -187,6 +191,7 @@ class TestIdempotencyAndFalsePositives:
         "Use \\n to break lines.\nSecond line.",
         "$$\na \\\\ b\n$$",
         "with $2^n$ states and where $d_k = 64$ heads",
+        "pay \\$5/unit and $x$ later",
     ]
 
     @pytest.mark.parametrize("text", NO_OPS)

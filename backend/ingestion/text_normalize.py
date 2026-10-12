@@ -203,6 +203,25 @@ def normalize_math_fences(text: str) -> str:
 _MATHISH_RE = re.compile(r"[\\^_=<>+*/]")
 
 
+def _closed_span(line: str, i: int) -> str | None:
+    """The text between the ``$`` at ``line[i]`` and its closing ``$``.
+
+    None when no unescaped ``$`` closes it on the line, or when the closer is
+    itself followed by a digit: two amounts (``$5 and $10``, ``$5 < $10``)
+    are not a formula.
+    """
+    j = i + 1
+    while True:
+        j = line.find("$", j)
+        if j == -1:
+            return None
+        if line[j - 1] != "\\":
+            break
+        j += 1
+    after = line[j + 1] if j + 1 < len(line) else ""
+    return None if after.isdigit() else line[i + 1 : j]
+
+
 def _opens_math(line: str, i: int) -> bool:
     """``line[i]`` is a ``$`` followed by a digit. Does an inline formula follow?
 
@@ -212,19 +231,29 @@ def _opens_math(line: str, i: int) -> bool:
     one token (``$5$``, ``$6n$``, ``$2n-1$``) and anything containing TeX or
     operators (``$2^n$``, ``$10\\%$``) is math.
     """
-    j = i + 1
-    while True:
-        j = line.find("$", j)
-        if j == -1:
-            return False
-        if line[j - 1] != "\\":
-            break
-        j += 1
-    after = line[j + 1] if j + 1 < len(line) else ""
-    if after.isdigit():
-        return False
-    cand = line[i + 1 : j]
-    return not re.search(r"[\s;]", cand) or _MATHISH_RE.search(cand) is not None
+    cand = _closed_span(line, i)
+    return cand is not None and (
+        not re.search(r"[\s;]", cand) or _MATHISH_RE.search(cand) is not None
+    )
+
+
+def _misread_as_money(line: str, i: int) -> bool:
+    """The older rule escaped the ``$`` at ``line[i]`` though a formula follows.
+
+    A stored ``\\$`` is undone only for the shape that rule escaped and the
+    current one reads as math: a closed one-token span with no TeX or
+    operator that is not a bare number (``\\$6n$``, ``\\$2n-1$``). Any other
+    ``\\$`` was written that way (``\\$5/unit and $x$``, ``\\$5$``) and stays.
+    A span holding ``%`` or ``&`` stays too, since ``wrap_bare_tex`` unescapes
+    ``\\%`` and ``\\&`` and undoing it would break idempotency.
+    """
+    cand = _closed_span(line, i)
+    return (
+        cand is not None
+        and not re.search(r"[\s;%&]", cand)
+        and _MATHISH_RE.search(cand) is None
+        and not re.fullmatch(r"[\d.,]+", cand)
+    )
 
 
 def _at_token_start(line: str, i: int) -> bool:
@@ -235,9 +264,9 @@ def _at_token_start(line: str, i: int) -> bool:
 def escape_currency(text: str) -> str:
     """``$391M; Harris $191M`` is money, not a formula — escape the ``$``.
 
-    Decided per ``$`` followed by a digit at the start of a token. A ``\\$``
-    that an older rule stored in front of a formula (``\\$6n$``) is undone,
-    so stored papers are repaired at read time.
+    Decided per ``$`` followed by a digit at the start of a token. Only a
+    ``\\$`` that an older rule stored in front of a one-token formula
+    (``\\$6n$``) is undone, so stored papers are repaired at read time.
     """
     out: list[str] = []
     in_block = False
@@ -257,7 +286,7 @@ def escape_currency(text: str) -> str:
             if chars[i] == "$" and i + 1 < len(chars) and chars[i + 1].isdigit():
                 cur = "".join(chars)
                 if i > 0 and chars[i - 1] == "\\":
-                    if _at_token_start(cur, i - 1) and _opens_math(cur, i):
+                    if _at_token_start(cur, i - 1) and _misread_as_money(cur, i):
                         del chars[i - 1]
                         i -= 1
                 elif _at_token_start(cur, i) and not _opens_math(cur, i):
