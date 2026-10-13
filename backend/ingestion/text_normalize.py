@@ -122,13 +122,25 @@ def _one_line_display(s: str) -> str | None:
     return None
 
 
-def _closed_later(lines: list[str], k: int) -> bool:
-    """The next line after ``lines[k]`` that holds a ``$$`` ends with its only one."""
-    for line in lines[k + 1 :]:
-        if "$$" in line:
-            s = line.strip()
-            return s.endswith("$$") and s.count("$$") == 1
-    return False
+def _glued_opener(s: str) -> bool:
+    """A stripped line that is a ``$$`` with the equation's first line glued on."""
+    return len(s) > 2 and s.startswith("$$") and s.count("$$") == 1
+
+
+def _closed_later(done: list[str], rest: list[str]) -> bool:
+    """The glued opener ``rest[0]`` is closed once the walk is done.
+
+    It is when the next line holding a ``$$`` ends with its only one or is
+    a one-line pair (the walk puts that on fence lines). A later glued
+    opener is passed over, since the walk splits it only when this same
+    test holds. With neither, the ``$$`` the walk adds to an odd count
+    closes it (``done`` is the output so far).
+    """
+    for line in rest[1:]:
+        s = line.strip()
+        if "$$" in s and not _glued_opener(s):
+            return _one_line_display(s) is not None or (s.endswith("$$") and s.count("$$") == 1)
+    return "\n".join(done + rest).count("$$") % 2 == 1
 
 
 def normalize_math_fences(text: str) -> str:
@@ -166,11 +178,10 @@ def normalize_math_fences(text: str) -> str:
             if tex is not None:
                 out.extend([f"{indent}$$", indent + tex, f"{indent}$$"])
                 continue
-            if not in_code and len(s) > 2 and s.startswith("$$") and s.count("$$") == 1:
-                if _closed_later(lines, k):
-                    out.extend([f"{indent}$$", indent + s[2:].strip()])
-                    open_block = True
-                    continue
+            if not in_code and _glued_opener(s) and _closed_later(out, lines[k:]):
+                out.extend([f"{indent}$$", indent + s[2:].strip()])
+                open_block = True
+                continue
             if s == "$$" and not in_code:
                 open_block = True
             out.append(line)
@@ -182,7 +193,9 @@ def normalize_math_fences(text: str) -> str:
         m = re.match(r"^(.*?)\$\$[ \t]*(\S.*)$", line)
         if m and "$$" not in m.group(1):
             # "... = f(x).$$ Intuition: ..." -> equation, closer, blank, prose
-            out.extend([m.group(1).rstrip(), f"{indent}$$", "", indent + m.group(2)])
+            if m.group(1).strip():
+                out.append(m.group(1).rstrip())
+            out.extend([f"{indent}$$", "", indent + m.group(2)])
             open_block = False
             continue
         if s.endswith("$$") and s.count("$$") == 1:
@@ -398,6 +411,7 @@ _SYMBOLS = {
     "int": "∫", "in": "∈", "subset": "⊂", "cup": "∪", "cap": "∩", "circ": "∘", "star": "★",
     "log": "log", "ln": "ln", "exp": "exp", "min": "min", "max": "max", "sin": "sin", "cos": "cos",
 }
+_TITLE_MATH_RE = re.compile(r"\$([^$]+)\$")
 
 
 def tex_to_text(title: str | None) -> str:
@@ -406,9 +420,14 @@ def tex_to_text(title: str | None) -> str:
     ``H$_2$O`` -> ``H\u2082O``; ``Rings $\\mathbb Z/n\\mathbb Z$`` -> ``Rings Z/nZ``;
     ``$\\alpha$-decay`` -> ``α-decay``; unknown commands keep their name.
     """
-    if not title:
+    return _plain_text(title, _TITLE_MATH_RE)
+
+
+def _plain_text(text: str | None, math_re: re.Pattern[str]) -> str:
+    """``tex_to_text`` with ``math_re`` deciding which ``$...$`` spans are math."""
+    if not text:
         return ""
-    t = _strip_styles(title, markdown=False)
+    t = _strip_styles(text, markdown=False)
     t = t.replace("--", "\u2013")
 
     def plain_math(m: re.Match) -> str:
@@ -429,7 +448,7 @@ def tex_to_text(title: str | None) -> str:
         inner = re.sub(r"\s*([→←×·∼≈≠≤≥±∈⊂∪∩∘/=+\-])\s*", r"\1", inner)
         return inner
 
-    t = re.sub(r"\$([^$]+)\$", plain_math, t)
+    t = math_re.sub(plain_math, t)
     return re.sub(r"\s+", " ", t).strip()
 
 
@@ -437,12 +456,15 @@ def tex_to_text(title: str | None) -> str:
 # 7. Plain-text video labels
 # ---------------------------------------------------------------------------
 # A word carries TeX when it has a command, a braced or command sub/superscript,
-# or a bare one that Unicode can render (x_1, n^2, S^*, \pi^+). Bare letter
-# subscripts (JRC_m, G_goal, file_name.py) are left as written.
-_LABEL_TEX_RE = re.compile(r"\\[A-Za-z]|[_^][{\\]|[A-Za-z0-9)}\]][_^][\d*+\-]")
+# or a bare one-character one that Unicode can render (x_1, n^2, S^*, \pi^+).
+# Bare letter subscripts (JRC_m, G_goal, file_name.py) and longer bare scripts
+# (2^10, model_2_layers, conv2d_3x3) are left as written.
+_LABEL_TEX_RE = re.compile(r"\\[A-Za-z]|[_^][{\\]|[A-Za-z0-9)}\]][_^][\d*+\-](?!\w)")
 _FONT_SWITCH_RE = re.compile(
     r"\\(?:rm|bf|it|sf|tt|cal|mathrm|mathbf|mathit|mathsf|mathcal|mathbb)\b(?!\{)\s*"
 )
+# A money ``\$`` (escape_currency) neither opens nor closes a label's span.
+_LABEL_MATH_RE = re.compile(r"(?<!\\)\$([^$]+)(?<!\\)\$")
 
 
 def _wrap_tex_words(text: str) -> str:
@@ -481,16 +503,17 @@ def label_to_text(label: str | None) -> str:
     delimiters (``S_{(j)}^*``, ``\\Phi(\\bx)=g_{\\theta}(...)``), which
     ``tex_to_text`` alone leaves untouched, plus JSON-escape residue
     (``\\u2194``, ``\\\\mathcal``, ``Levin\\'s``). The residue is undone,
-    TeX-bearing words are wrapped in ``$...$`` (``$...$`` spans already
-    there are kept; text holding an unpaired ``$`` is not wrapped, since a
-    new pair would close against it) and the result goes through
-    ``tex_to_text``.
+    each ``$`` is decided money or math as in section text
+    (``escape_currency``; money stays as written), TeX-bearing words are
+    wrapped in ``$...$`` (``$...$`` spans already there are kept; text
+    holding an unpaired ``$`` is not wrapped, since a new pair would close
+    against it) and the result is rendered like a title.
     """
     if not label:
         return ""
     t = _UNICODE_ESC_RE.sub(lambda m: chr(int(m.group(1), 16)), label)
     t = re.sub(r"\\\\(?=[A-Za-z])", r"\\", t)
     t = re.sub(r"\\(['{}])", r"\1", t)
-    parts = re.split(r"(\$[^$]+\$)", t)
-    wrapped = (p if i % 2 or "$" in p else _wrap_tex_words(p) for i, p in enumerate(parts))
-    return tex_to_text("".join(wrapped))
+    parts = _LABEL_MATH_RE.split(escape_currency(t))
+    wrapped = (f"${p}$" if i % 2 else p if "$" in p else _wrap_tex_words(p) for i, p in enumerate(parts))
+    return _plain_text("".join(wrapped), _LABEL_MATH_RE).replace("\\$", "$")

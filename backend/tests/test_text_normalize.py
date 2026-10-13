@@ -94,9 +94,11 @@ class TestFences:
         # 1903.06586: "$$x,\qquad" read as the fence's meta, closer never found.
         text = "1. Split:\n   $$U = F(X),\\qquad\n   V = G(X),$$\n   next"
         assert normalize_math_fences(text) == "1. Split:\n   $$\n   U = F(X),\\qquad\n   V = G(X),\n   $$\n   next"
+        # The closing $$ the walk adds at the end closes it too.
+        assert normalize_math_fences("$$x = 1\nprose") == "$$\nx = 1\nprose\n$$"
 
     def test_glued_opener_without_a_later_closer_is_not_split(self):
-        assert normalize_math_fences("$$x = 1\nprose").split("\n")[0] == "$$x = 1"
+        assert normalize_math_fences("$$x = 1\nso $$y$$ here").split("\n")[0] == "$$x = 1"
 
     def test_one_line_pair_inside_a_code_fence_is_not_split(self):
         text = "```\n$$x$$\n```"
@@ -176,6 +178,8 @@ class TestIdempotencyAndFalsePositives:
         "1. Split:\n   $$U = F(X),\\qquad\n   V = G(X),$$ so\n   next",
         "Intro.\\n\\nKey:\\n- a\n\\n\\nB `c\\n\\nD`",
         "rate \\$10\\%$ x",
+        "$$x = 1\nprose",
+        "$$a = 1,\nb = 2\n\n$$y$$",
     ]
 
     @pytest.mark.parametrize("from_organizer", [True, False])
@@ -252,6 +256,7 @@ class TestLabels:
         ("Pipeline (M_0 \\u2192 cuts) with \\\\theta", "Pipeline (M₀ → cuts) with θ"),
         ("Acoustic scale r_{\\rm d} (drag epoch)", "Acoustic scale rd (drag epoch)"),
         ("Taste (the $\\alpha$-line)", "Taste (the α-line)"),
+        ("Fees: $5 and $x$ units", "Fees: $5 and x units"),
     ])
     def test_tex_becomes_plain_text(self, label, expected):
         assert label_to_text(label) == expected
@@ -259,6 +264,7 @@ class TestLabels:
 
     @pytest.mark.parametrize("label", [
         "DP realignment", "Teacher -> Student", "JRC_m and G_goal in file_name.py", "Fees of $5 per x_1 call",
+        "$5 vs $10 pricing", "Cost reduction from $5M to $2M", "2^10 tokens", "model_2_layers and conv2d_3x3",
     ])
     def test_plain_labels_are_unchanged(self, label):
         assert label_to_text(label) == label
