@@ -257,6 +257,7 @@ class TestLabels:
         ("Acoustic scale r_{\\rm d} (drag epoch)", "Acoustic scale rd (drag epoch)"),
         ("Taste (the $\\alpha$-line)", "Taste (the α-line)"),
         ("Fees: $5 and $x$ units", "Fees: $5 and x units"),
+        ("f_{} and g", "f and g"),
     ])
     def test_tex_becomes_plain_text(self, label, expected):
         assert label_to_text(label) == expected

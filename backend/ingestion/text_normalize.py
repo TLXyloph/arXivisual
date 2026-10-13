@@ -437,8 +437,8 @@ def _plain_text(text: str | None, math_re: re.Pattern[str]) -> str:
         inner = re.sub(r"\\([A-Za-z]+)", lambda s: _SYMBOLS.get(s.group(1), s.group(0)), inner)
         inner = re.sub(r"\\(?:mathbb|mathcal|mathrm|mathbf|mathit|text|operatorname)\s*\{?([A-Za-z0-9]+)\}?", r"\1", inner)
         inner = re.sub(r"\\sqrt\{([^{}]*)\}", "\u221a\\1", inner)
-        inner = re.sub(r"_\{([^{}]*)\}|_([\w+\-])", lambda s: (s.group(1) or s.group(2)).translate(_SUB), inner)
-        inner = re.sub(r"\^\{([^{}]*)\}|\^([\w*+\-])", lambda s: (s.group(1) or s.group(2)).translate(_SUP), inner)
+        inner = re.sub(r"_\{([^{}]*)\}|_([\w+\-])", lambda s: (s.group(1) if s.group(1) is not None else s.group(2)).translate(_SUB), inner)
+        inner = re.sub(r"\^\{([^{}]*)\}|\^([\w*+\-])", lambda s: (s.group(1) if s.group(1) is not None else s.group(2)).translate(_SUP), inner)
         # \ell_\infty -> ℓ∞: before a symbol or command the marker is dropped
         # (the symbol carries the meaning).
         inner = re.sub(r"[_^](?=\\|[^\w\s\x00-\x7f])", "", inner)
