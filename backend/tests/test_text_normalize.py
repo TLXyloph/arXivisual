@@ -163,6 +163,9 @@ class TestCurrency:
         # Only the shape the older rule escaped is undone; an escape it never wrote stays.
         for text in ("paid \\$5 for $x$ units", "pay \\$5/unit and $x$ later", "a \\$5$ b"):
             assert escape_currency(text) == text
+        # A closer glued to \ or a letter opens a span wrap_bare_tex wrote after the escape.
+        for text in ("~\\$5M($\\pm$ 2M)", "the fee \\$5-$x$ per unit", "about \\$5M,$\\ldots$ more"):
+            assert escape_currency(text) == text
 
 
 class TestIdempotencyAndFalsePositives:
@@ -180,6 +183,9 @@ class TestIdempotencyAndFalsePositives:
         "rate \\$10\\%$ x",
         "$$x = 1\nprose",
         "$$a = 1,\nb = 2\n\n$$y$$",
+        "Revenue ~$5M(\\pm 2M) in 2020.",
+        "the fee $5-\\(x\\) per unit",
+        "about $5M,\\ldots more",
     ]
 
     @pytest.mark.parametrize("from_organizer", [True, False])
@@ -274,6 +280,7 @@ class TestLabels:
     @pytest.mark.parametrize("label", [
         "DP realignment", "Teacher -> Student", "JRC_m and G_goal in file_name.py", "Fees of $5 per x_1 call",
         "$5 vs $10 pricing", "Cost reduction from $5M to $2M", "2^10 tokens", "model_2_layers and conv2d_3x3",
+        "conv_block_1 and num_heads_8", "train_stage_1.py config", "G_goal_1 vs hidden_state_0",
     ])
     def test_plain_labels_are_unchanged(self, label):
         assert label_to_text(label) == label
