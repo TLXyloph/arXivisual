@@ -259,19 +259,19 @@ def _misread_as_money(line: str, i: int) -> bool:
     ``\\$`` was written that way (``\\$5/unit and $x$``, ``\\$5$``) and stays.
     A span holding ``%`` or ``&`` stays too, since ``wrap_bare_tex`` unescapes
     ``\\%`` and ``\\&`` and undoing it would break idempotency. So does one
-    whose closer is glued to a ``\\`` or a letter: that ``$`` opens a span
-    ``wrap_bare_tex`` wrote after the escape (``\\$5M($\\pm$``, ``\\$5-$x$``).
+    whose closer opens a span (an odd number of ``$`` follow it on the line):
+    ``wrap_bare_tex`` wrote that span after the escape (``\\$5M($\\pm$``,
+    ``\\$5-$(a+b)$``).
     """
     cand = _closed_span(line, i)
     if cand is None:
         return False
-    after = line[i + len(cand) + 2 : i + len(cand) + 3]
+    rest = line[i + len(cand) + 2 :]
     return (
         not re.search(r"[\s;%&]", cand)
         and _MATHISH_RE.search(cand) is None
         and not re.fullmatch(r"[\d.,]+", cand)
-        and after != "\\"
-        and not after.isalpha()
+        and len(re.findall(r"(?<!\\)\$", rest)) % 2 == 0
     )
 
 
@@ -469,10 +469,10 @@ def _plain_text(text: str | None, math_re: re.Pattern[str], *, en_dash: bool = T
 # or a bare one-character one that Unicode can render (x_1, n^2, S^*, \pi^+).
 # Bare letter subscripts (JRC_m, G_goal, file_name.py) and longer bare scripts
 # (2^10, model_2_layers, conv2d_3x3) are left as written, and so is a word
-# holding one next to a one-character script: an identifier (conv_block_1).
+# that also holds a longer letter-led subscript: an identifier (conv_block_1).
 _LABEL_TEX_RE = re.compile(r"\\[A-Za-z]|[_^][{\\]")
 _LABEL_SCRIPT_RE = re.compile(r"[A-Za-z0-9)}\]][_^][\d*+\-](?!\w)")
-_LABEL_IDENT_RE = re.compile(r"_\w{2,}")
+_LABEL_IDENT_RE = re.compile(r"_[A-Za-z]\w")
 _FONT_SWITCH_RE = re.compile(
     r"\\(?:rm|bf|it|sf|tt|cal|mathrm|mathbf|mathit|mathsf|mathcal|mathbb)\b(?!\{)\s*"
 )

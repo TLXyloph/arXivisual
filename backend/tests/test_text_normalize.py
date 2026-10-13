@@ -163,9 +163,11 @@ class TestCurrency:
         # Only the shape the older rule escaped is undone; an escape it never wrote stays.
         for text in ("paid \\$5 for $x$ units", "pay \\$5/unit and $x$ later", "a \\$5$ b"):
             assert escape_currency(text) == text
-        # A closer glued to \ or a letter opens a span wrap_bare_tex wrote after the escape.
-        for text in ("~\\$5M($\\pm$ 2M)", "the fee \\$5-$x$ per unit", "about \\$5M,$\\ldots$ more"):
+        # A closer that opens a span (odd $ count after it) was written by wrap_bare_tex after the escape.
+        for text in ("~\\$5M($\\pm$ 2M)", "the fee \\$5-$x$ per unit", "about \\$5M,$\\ldots$ more",
+                     "the fee \\$5-$(a+b)$ per unit", "fee \\$5M-$-x$ per", "fee \\$5M-$[0,1]$ per"):
             assert escape_currency(text) == text
+        assert escape_currency("dimension \\$6n$ and $x$") == "dimension $6n$ and $x$"
 
 
 class TestIdempotencyAndFalsePositives:
@@ -186,6 +188,9 @@ class TestIdempotencyAndFalsePositives:
         "Revenue ~$5M(\\pm 2M) in 2020.",
         "the fee $5-\\(x\\) per unit",
         "about $5M,\\ldots more",
+        "the fee $5-\\((a+b)\\) per unit",
+        "fee $5M-\\(-x\\) per",
+        "fee $5M-\\([0,1]\\) per",
     ]
 
     @pytest.mark.parametrize("from_organizer", [True, False])
@@ -272,6 +277,8 @@ class TestLabels:
         ("Taste (the $\\alpha$-line)", "Taste (the α-line)"),
         ("Fees: $5 and $x$ units", "Fees: $5 and x units"),
         ("f_{} and g", "f and g"),
+        ("x_1x_2 coupling", "x₁x₂ coupling"),
+        ("T_1T_2 relaxation", "T₁T₂ relaxation"),
     ])
     def test_tex_becomes_plain_text(self, label, expected):
         assert label_to_text(label) == expected
