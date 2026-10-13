@@ -423,12 +423,16 @@ def tex_to_text(title: str | None) -> str:
     return _plain_text(title, _TITLE_MATH_RE)
 
 
-def _plain_text(text: str | None, math_re: re.Pattern[str]) -> str:
-    """``tex_to_text`` with ``math_re`` deciding which ``$...$`` spans are math."""
+def _plain_text(text: str | None, math_re: re.Pattern[str], *, en_dash: bool = True) -> str:
+    """``tex_to_text`` with ``math_re`` deciding which ``$...$`` spans are math.
+
+    ``en_dash=False`` keeps ``--`` as written instead of the title rule's en dash.
+    """
     if not text:
         return ""
     t = _strip_styles(text, markdown=False)
-    t = t.replace("--", "\u2013")
+    if en_dash:
+        t = t.replace("--", "\u2013")
 
     def plain_math(m: re.Match) -> str:
         inner = m.group(1)
@@ -507,7 +511,9 @@ def label_to_text(label: str | None) -> str:
     (``escape_currency``; money stays as written), TeX-bearing words are
     wrapped in ``$...$`` (``$...$`` spans already there are kept; text
     holding an unpaired ``$`` is not wrapped, since a new pair would close
-    against it) and the result is rendered like a title.
+    against it) and the result is rendered like a title, except that
+    ``--`` stays as written: ``-->``, ``<--`` and ``---`` are arrows and
+    rules, not en dashes (in a TeX span ``--`` is two minus signs anyway).
     """
     if not label:
         return ""
@@ -516,4 +522,4 @@ def label_to_text(label: str | None) -> str:
     t = re.sub(r"\\(['{}])", r"\1", t)
     parts = _LABEL_MATH_RE.split(escape_currency(t))
     wrapped = (f"${p}$" if i % 2 else p if "$" in p else _wrap_tex_words(p) for i, p in enumerate(parts))
-    return _plain_text("".join(wrapped), _LABEL_MATH_RE).replace("\\$", "$")
+    return _plain_text("".join(wrapped), _LABEL_MATH_RE, en_dash=False).replace("\\$", "$")

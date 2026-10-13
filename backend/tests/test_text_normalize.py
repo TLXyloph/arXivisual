@@ -245,6 +245,14 @@ class TestTitles:
         assert tex_to_text("optimum $S^*$ of $x_+$") == "optimum S* of x₊"
         assert tex_to_text("$e^(x)$ growth") == "e^(x) growth"  # only dropped before a symbol
 
+    # TeX's -- is an en dash in a title; labels keep it as written (TestLabels).
+    @pytest.mark.parametrize(("title", "expected"), [
+        ("Yang--Mills theory", "Yang\u2013Mills theory"),
+        ("$\\alpha$--$\\beta$ duality", "α\u2013β duality"),
+    ])
+    def test_double_dash_is_an_en_dash(self, title, expected):
+        assert tex_to_text(title) == expected
+
 
 class TestLabels:
     """Video concepts are LLM-written plain text that often carries bare TeX."""
@@ -269,6 +277,21 @@ class TestLabels:
     ])
     def test_plain_labels_are_unchanged(self, label):
         assert label_to_text(label) == label
+
+    # Arrows and rules, not en dashes: kept as written, also next to TeX and
+    # inside a TeX span (the title rule turned "-->" into an en dash and ">").
+    @pytest.mark.parametrize(("label", "expected"), [
+        ("Encoder --> Decoder pipeline", "Encoder --> Decoder pipeline"),
+        ("Decoder <-- Encoder", "Decoder <-- Encoder"),
+        ("Encoder <--> Decoder", "Encoder <--> Decoder"),
+        ("Before --- after", "Before --- after"),
+        ("Yang--Baxter maps", "Yang--Baxter maps"),
+        ("x_1 --> \\Phi(x)", "x₁ --> Φ(x)"),
+        ("$a--b$ split", "a--b split"),
+    ])
+    def test_double_dashes_are_kept(self, label, expected):
+        assert label_to_text(label) == expected
+        assert label_to_text(expected) == expected
 
     def test_missing_label(self):
         assert label_to_text(None) == "" and label_to_text("") == ""
