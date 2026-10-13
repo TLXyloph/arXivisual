@@ -259,19 +259,19 @@ def _misread_as_money(line: str, i: int) -> bool:
     ``\\$`` was written that way (``\\$5/unit and $x$``, ``\\$5$``) and stays.
     A span holding ``%`` or ``&`` stays too, since ``wrap_bare_tex`` unescapes
     ``\\%`` and ``\\&`` and undoing it would break idempotency. So does one
-    whose closer opens a span (an odd number of ``$`` follow it on the line):
-    ``wrap_bare_tex`` wrote that span after the escape (``\\$5M($\\pm$``,
-    ``\\$5-$(a+b)$``).
+    whose closer is glued to a ``\\`` or a letter: that ``$`` opens a span
+    ``wrap_bare_tex`` wrote after the escape (``\\$5M($\\pm$``, ``\\$5-$x$``).
     """
     cand = _closed_span(line, i)
     if cand is None:
         return False
-    rest = line[i + len(cand) + 2 :]
+    after = line[i + len(cand) + 2 : i + len(cand) + 3]
     return (
         not re.search(r"[\s;%&]", cand)
         and _MATHISH_RE.search(cand) is None
         and not re.fullmatch(r"[\d.,]+", cand)
-        and len(re.findall(r"(?<!\\)\$", rest)) % 2 == 0
+        and after != "\\"
+        and not after.isalpha()
     )
 
 

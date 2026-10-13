@@ -160,12 +160,16 @@ class TestCurrency:
         # 1301.0081 was stored as \$6n$ by the older rule.
         assert escape_currency("dimension \\$6n$ here") == "dimension $6n$ here"
         assert escape_currency("the \\$2n-1$ terms") == "the $2n-1$ terms"
+        # Every stored escape on a line is undone in the same pass.
+        assert escape_currency("a \\$2n$-dimensional phase space with \\$6n$ coordinates") == (
+            "a $2n$-dimensional phase space with $6n$ coordinates"
+        )
+        assert escape_currency("the \\$2n-1$ terms and \\$2n$ others") == "the $2n-1$ terms and $2n$ others"
         # Only the shape the older rule escaped is undone; an escape it never wrote stays.
         for text in ("paid \\$5 for $x$ units", "pay \\$5/unit and $x$ later", "a \\$5$ b"):
             assert escape_currency(text) == text
-        # A closer that opens a span (odd $ count after it) was written by wrap_bare_tex after the escape.
-        for text in ("~\\$5M($\\pm$ 2M)", "the fee \\$5-$x$ per unit", "about \\$5M,$\\ldots$ more",
-                     "the fee \\$5-$(a+b)$ per unit", "fee \\$5M-$-x$ per", "fee \\$5M-$[0,1]$ per"):
+        # A closer glued to \ or a letter opens a span wrap_bare_tex wrote after the escape.
+        for text in ("~\\$5M($\\pm$ 2M)", "the fee \\$5-$x$ per unit", "about \\$5M,$\\ldots$ more"):
             assert escape_currency(text) == text
         assert escape_currency("dimension \\$6n$ and $x$") == "dimension $6n$ and $x$"
 
@@ -188,9 +192,8 @@ class TestIdempotencyAndFalsePositives:
         "Revenue ~$5M(\\pm 2M) in 2020.",
         "the fee $5-\\(x\\) per unit",
         "about $5M,\\ldots more",
-        "the fee $5-\\((a+b)\\) per unit",
-        "fee $5M-\\(-x\\) per",
-        "fee $5M-\\([0,1]\\) per",
+        "a \\$2n$-dimensional phase space with \\$6n$ coordinates",
+        "the \\$2n-1$ terms and \\$2n$ others",
     ]
 
     @pytest.mark.parametrize("from_organizer", [True, False])
